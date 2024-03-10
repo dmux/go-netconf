@@ -9,13 +9,16 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 type NetworkConfig struct {
+	Version  int                `yaml:"version"`
 	Networks map[string]Network `yaml:"network"`
 }
 
 type Network struct {
+	Version   int                 `yaml:"version"`
 	Ethernets map[string]Ethernet `yaml:"ethernets,omitempty"`
 }
 
@@ -31,8 +34,57 @@ type Names struct {
 	Addresses []string `yaml:"addresses,omitempty"`
 }
 
+func readYAML(filePath string) ([]byte, error) {
+	file, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+func showNetworkConfig(app *tview.Application) {
+	filePath := "/etc/netplan/01-netcfg.yaml"
+	configData, err := readYAML(filePath)
+	if err != nil {
+		log.Fatalf("Failed to read YAML file: %v", err)
+	}
+
+	configText := string(configData)
+	modal := tview.NewModal().
+		SetText(configText).
+		AddButtons([]string{"OK"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			if buttonLabel == "OK" {
+				app.Stop()
+			}
+		})
+	if err := app.SetRoot(modal, false).SetFocus(modal).Run(); err != nil {
+		panic(err)
+	}
+}
+
 func main() {
+	runConfigurationUI()
+}
+
+func trimStrings(slice []string) []string {
+	trimmed := make([]string, len(slice))
+	for i, s := range slice {
+		trimmed[i] = strings.TrimSpace(s)
+	}
+	return trimmed
+}
+
+func runConfigurationUI() {
 	app := tview.NewApplication()
+
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlC {
+			app.Stop()
+			return nil
+		}
+		return event
+	})
 
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle("Configure Networking").SetTitleAlign(tview.AlignLeft)
@@ -56,7 +108,7 @@ func main() {
 	form.AddCheckbox("DHCP", dhcp, nil)
 
 	ipv4Address := ""
-	form.AddInputField("IPv4 Address", ipv4Address, 0, nil, func(text string) {
+	form.AddInputField("IPv4 Address (cidr format)", ipv4Address, 0, nil, func(text string) {
 		ipv4Address = text
 	})
 
@@ -65,9 +117,9 @@ func main() {
 		gateway = text
 	})
 
-	dnsServer := ""
-	form.AddInputField("DNS Server", dnsServer, 0, nil, func(text string) {
-		dnsServer = text
+	dnsServers := ""
+	form.AddInputField("DNS Servers (comma separated)", dnsServers, 0, nil, func(text string) {
+		dnsServers = text
 	})
 
 	form.AddButton("OK", func() {
@@ -75,7 +127,8 @@ func main() {
 		interfaceName := interfaceNames[selectedOptionIndex]
 		config := NetworkConfig{
 			Networks: map[string]Network{
-				"version": {
+				"network": {
+					Version: 2,
 					Ethernets: map[string]Ethernet{
 						interfaceName: {
 							Dhcp4: dhcp,
@@ -90,7 +143,7 @@ func main() {
 				Addresses: ipv4Address,
 				Gateway4:  gateway,
 				Nameservers: Names{
-					Addresses: []string{dnsServer},
+					Addresses: trimStrings(strings.Split(dnsServers, ",")),
 				},
 			}
 		}
@@ -113,11 +166,15 @@ func main() {
 
 		fmt.Println("Network configuration applied successfully.")
 
-		app.Stop()
+		runConfigurationUI()
 	}).
 		AddButton("Cancel", func() {
 			app.Stop()
 		})
+
+	form.AddButton("Show Network Config", func() {
+		showNetworkConfig(app)
+	})
 
 	form.AddFormItem(interfaceField)
 
